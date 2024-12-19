@@ -61,6 +61,8 @@ public class EdgeSyncCursor {
         if (fullSync) {
             fetchers.add(new TenantEdgeEventFetcher(ctx.getTenantService()));
             fetchers.add(new QueuesEdgeEventFetcher(ctx.getQueueService()));
+            fetchers.add(new AdminSettingsEdgeEventFetcher(ctx.getAdminSettingsService(), ctx.getAttributesService()));
+            fetchers.add(new AttributeEdgeEventFetcher(ctx.getAttributesService()));
             fetchers.add(new RuleChainsEdgeEventFetcher(ctx.getRuleChainService()));
             fetchers.add(new AdminSettingsEdgeEventFetcher(ctx.getAdminSettingsService()));
             fetchers.add(new TenantAdminUsersEdgeEventFetcher(ctx.getUserService()));
