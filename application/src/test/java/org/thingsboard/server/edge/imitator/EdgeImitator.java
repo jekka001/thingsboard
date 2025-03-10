@@ -42,6 +42,7 @@ import org.thingsboard.server.gen.edge.v1.DeviceUpdateMsg;
 import org.thingsboard.server.gen.edge.v1.DownlinkMsg;
 import org.thingsboard.server.gen.edge.v1.DownlinkResponseMsg;
 import org.thingsboard.server.gen.edge.v1.EdgeConfiguration;
+import org.thingsboard.server.gen.edge.v1.EdgeVersion;
 import org.thingsboard.server.gen.edge.v1.EntityDataProto;
 import org.thingsboard.server.gen.edge.v1.EntityViewUpdateMsg;
 import org.thingsboard.server.gen.edge.v1.NotificationRuleUpdateMsg;
@@ -83,6 +84,7 @@ public class EdgeImitator {
     private static final int MAX_DOWNLINK_FAILS = 2;
     private final String routingKey;
     private final String routingSecret;
+    @Setter private int edgeVersion;
 
     private final EdgeRpcClient edgeRpcClient;
 
@@ -114,6 +116,7 @@ public class EdgeImitator {
         ignoredTypes = new ArrayList<>();
         this.routingKey = routingKey;
         this.routingSecret = routingSecret;
+        this.edgeVersion = EdgeVersion.V_4_0_0_VALUE;
         updateEdgeClientFields("rpcHost", host);
         updateEdgeClientFields("rpcPort", port);
         updateEdgeClientFields("timeoutSecs", 3);
@@ -130,7 +133,7 @@ public class EdgeImitator {
     }
 
     public void connect() {
-        edgeRpcClient.connect(routingKey, routingSecret,
+        edgeRpcClient.connect(routingKey, routingSecret, edgeVersion,
                 this::onUplinkResponse,
                 this::onEdgeUpdate,
                 this::onDownlink,

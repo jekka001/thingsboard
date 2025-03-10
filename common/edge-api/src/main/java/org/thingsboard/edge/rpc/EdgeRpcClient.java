@@ -27,6 +27,7 @@ public interface EdgeRpcClient {
 
     void connect(String integrationKey,
                  String integrationSecret,
+                 int version,
                  Consumer<UplinkResponseMsg> onUplinkResponse,
                  Consumer<EdgeConfiguration> onEdgeUpdate,
                  Consumer<DownlinkMsg> onDownlink,

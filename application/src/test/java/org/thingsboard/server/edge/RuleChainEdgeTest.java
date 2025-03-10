@@ -18,8 +18,10 @@ package org.thingsboard.server.edge;
 import com.datastax.oss.driver.api.core.uuid.Uuids;
 import org.junit.Assert;
 import org.junit.Test;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.thingsboard.common.util.JacksonUtil;
 import org.thingsboard.rule.engine.metadata.TbGetAttributesNodeConfiguration;
+import org.thingsboard.rule.engine.telemetry.TbMsgTimeseriesNodeConfiguration;
 import org.thingsboard.rule.engine.util.TbMsgSource;
 import org.thingsboard.server.common.data.debug.DebugSettings;
 import org.thingsboard.server.common.data.edge.Edge;
@@ -28,7 +30,9 @@ import org.thingsboard.server.common.data.rule.RuleChain;
 import org.thingsboard.server.common.data.rule.RuleChainMetaData;
 import org.thingsboard.server.common.data.rule.RuleChainType;
 import org.thingsboard.server.common.data.rule.RuleNode;
+import org.thingsboard.server.dao.edge.EdgeDao;
 import org.thingsboard.server.dao.service.DaoSqlTest;
+import org.thingsboard.server.gen.edge.v1.EdgeVersion;
 import org.thingsboard.server.gen.edge.v1.RuleChainMetadataUpdateMsg;
 import org.thingsboard.server.gen.edge.v1.RuleChainUpdateMsg;
 import org.thingsboard.server.gen.edge.v1.UpdateMsgType;
@@ -47,6 +51,8 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 public class RuleChainEdgeTest extends AbstractEdgeTest {
 
     private static final int CONFIGURATION_VERSION = 5;
+    @Autowired
+    private EdgeDao edgeDao;
 
     @Test
     public void testRuleChains() throws Exception {
@@ -270,6 +276,100 @@ public class RuleChainEdgeTest extends AbstractEdgeTest {
         doDelete("/api/ruleChain/" + savedRuleChain.getUuidId())
                 .andExpect(status().isOk());
         Assert.assertTrue(edgeImitator.waitForMessages(5));
+    }
+
+    @Test
+    public void testRuleChainForOldEdgeVersion() throws Exception {
+        RuleNode tbMsgTimeseriesNode_3_7 = testRuleChain(EdgeVersion.V_3_7_0, 30, 4, 4);
+        Assert.assertEquals(2, tbMsgTimeseriesNode_3_7.getConfiguration().size());
+        Assert.assertFalse(tbMsgTimeseriesNode_3_7.getConfiguration().has("processingSettings"));
+
+        RuleNode tbMsgTimeseriesNode_3_8 = testRuleChain(EdgeVersion.V_3_8_0, 31, 4,4);
+        Assert.assertEquals(2, tbMsgTimeseriesNode_3_8.getConfiguration().size());
+        Assert.assertFalse(tbMsgTimeseriesNode_3_8.getConfiguration().has("processingSettings"));
+
+        RuleNode tbMsgTimeseriesNode_3_9 = testRuleChain(EdgeVersion.V_3_9_0, 31, 4, 4);
+        Assert.assertEquals(3, tbMsgTimeseriesNode_3_9.getConfiguration().size());
+        Assert.assertTrue(tbMsgTimeseriesNode_3_9.getConfiguration().has("processingSettings"));
+//
+        RuleNode tbMsgTimeseriesNode_4_0 = testRuleChain(EdgeVersion.V_4_0_0, 31, 4, 4);
+        Assert.assertEquals(3, tbMsgTimeseriesNode_4_0.getConfiguration().size());
+        Assert.assertTrue(tbMsgTimeseriesNode_4_0.getConfiguration().has("processingSettings"));
+
+    }
+
+    private RuleNode testRuleChain(EdgeVersion edgeVersion, int messageAmount, int first, int second) throws Exception {
+        edgeImitator.disconnect();
+        edgeImitator.expectMessageAmount(messageAmount);
+        edgeImitator.setEdgeVersion(edgeVersion.getNumber());
+        edgeImitator.connect();
+        RuleChain ruleChain = new RuleChain();
+        ruleChain.setName("Edge Test Rule Chain For "  + edgeVersion.name() + " Edge version");
+        ruleChain.setType(RuleChainType.EDGE);
+        RuleChain savedRuleChain = doPost("/api/ruleChain", ruleChain, RuleChain.class);
+        doPost("/api/edge/" + edge.getId().getId().toString()
+                + "/ruleChain/" + savedRuleChain.getUuidId(), RuleChain.class);
+        RuleChainMetaData savedRuleChainMetaData = createRuleChainMetadataForOldEdgeVersion(savedRuleChain);
+        Assert.assertTrue(edgeImitator.waitForMessages());
+
+        List<RuleChainUpdateMsg> ruleChainUpdateMsgs = edgeImitator.findAllMessagesByType(RuleChainUpdateMsg.class);
+        Assert.assertEquals(first, ruleChainUpdateMsgs.size());
+        RuleChainUpdateMsg ruleChainUpdateMsg = ruleChainUpdateMsgs.get(first - 1);
+        RuleChain ruleChainMsg = JacksonUtil.fromString(ruleChainUpdateMsg.getEntity(), RuleChain.class, true);
+        Assert.assertNotNull(ruleChainMsg);
+        Assert.assertEquals(savedRuleChain.getId(), ruleChainMsg.getId());
+
+
+        List<RuleChainMetadataUpdateMsg> ruleChainMetadataUpdateMsgs = edgeImitator.findAllMessagesByType(RuleChainMetadataUpdateMsg.class);
+        Assert.assertEquals(second, ruleChainMetadataUpdateMsgs.size());
+        RuleChainMetadataUpdateMsg ruleChainMetadataUpdateMsg = ruleChainMetadataUpdateMsgs.get(second - 1);
+        RuleChainMetaData ruleChainMetaData = JacksonUtil.fromString(ruleChainMetadataUpdateMsg.getEntity(), RuleChainMetaData.class, true);
+        Assert.assertNotNull(ruleChainMetaData);
+        Assert.assertEquals(savedRuleChainMetaData.getRuleChainId(), ruleChainMetaData.getRuleChainId());
+        Assert.assertEquals(1, ruleChainMetaData.getNodes().size());
+
+        RuleNode tbMsgTimeseriesNode = ruleChainMetaData.getNodes().stream().findFirst().orElse(null);
+        Assert.assertNotNull(tbMsgTimeseriesNode);
+        Assert.assertEquals(CONFIGURATION_VERSION, tbMsgTimeseriesNode.getConfigurationVersion());
+
+        // unassign rule chain from edge
+        edgeImitator.expectMessageAmount(1);
+        doDelete("/api/edge/" + edge.getUuidId()
+                + "/ruleChain/" + savedRuleChain.getUuidId(), RuleChain.class);
+        Assert.assertTrue(edgeImitator.waitForMessages());
+        Optional<RuleChainUpdateMsg> ruleChainUpdateMsgOpt = edgeImitator.findMessageByType(RuleChainUpdateMsg.class);
+        Assert.assertTrue(ruleChainUpdateMsgOpt.isPresent());
+        ruleChainUpdateMsg = ruleChainUpdateMsgOpt.get();
+        Assert.assertEquals(UpdateMsgType.ENTITY_DELETED_RPC_MESSAGE, ruleChainUpdateMsg.getMsgType());
+        Assert.assertEquals(ruleChainUpdateMsg.getIdMSB(), savedRuleChain.getUuidId().getMostSignificantBits());
+        Assert.assertEquals(ruleChainUpdateMsg.getIdLSB(), savedRuleChain.getUuidId().getLeastSignificantBits());
+
+        // delete rule chain
+        edgeImitator.expectMessageAmount(1);
+        doDelete("/api/ruleChain/" + savedRuleChain.getUuidId())
+                .andExpect(status().isOk());
+        Assert.assertTrue(edgeImitator.waitForMessages(5));
+
+        return tbMsgTimeseriesNode;
+    }
+
+    private RuleChainMetaData createRuleChainMetadataForOldEdgeVersion(RuleChain ruleChain) {
+        RuleChainMetaData ruleChainMetaData = new RuleChainMetaData();
+        ruleChainMetaData.setRuleChainId(ruleChain.getId());
+
+        RuleNode ruleNode1 = new RuleNode();
+        ruleNode1.setName("TbMsgTimeseriesNode");
+        ruleNode1.setType(org.thingsboard.rule.engine.telemetry.TbMsgTimeseriesNode.class.getName());
+        ruleNode1.setConfigurationVersion(CONFIGURATION_VERSION);
+        TbMsgTimeseriesNodeConfiguration configuration = new TbMsgTimeseriesNodeConfiguration().defaultConfiguration();
+        ruleNode1.setConfiguration(JacksonUtil.valueToTree(configuration));
+
+        List<RuleNode> ruleNodes = new ArrayList<>();
+        ruleNodes.add(ruleNode1);
+        ruleChainMetaData.setFirstNodeIndex(0);
+        ruleChainMetaData.setNodes(ruleNodes);
+
+        return doPost("/api/ruleChain/metadata", ruleChainMetaData, RuleChainMetaData.class);
     }
 
 }

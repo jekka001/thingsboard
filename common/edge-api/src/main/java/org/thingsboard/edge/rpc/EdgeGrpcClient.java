@@ -91,6 +91,7 @@ public class EdgeGrpcClient implements EdgeRpcClient {
     @Override
     public void connect(String edgeKey,
                         String edgeSecret,
+                        int edgeVersion,
                         Consumer<UplinkResponseMsg> onUplinkResponse,
                         Consumer<EdgeConfiguration> onEdgeUpdate,
                         Consumer<DownlinkMsg> onDownlink,
@@ -136,7 +137,7 @@ public class EdgeGrpcClient implements EdgeRpcClient {
                 .setConnectRequestMsg(ConnectRequestMsg.newBuilder()
                         .setEdgeRoutingKey(edgeKey)
                         .setEdgeSecret(edgeSecret)
-                        .setEdgeVersion(EdgeVersion.V_4_0_0)
+                        .setEdgeVersion(EdgeVersion.forNumber(edgeVersion))
                         .setMaxInboundMessageSize(maxInboundMessageSize)
                         .build())
                 .build());
