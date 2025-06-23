@@ -31,6 +31,7 @@ import org.thingsboard.server.common.data.AttributeScope;
 import org.thingsboard.server.common.data.EdgeUtils;
 import org.thingsboard.server.common.data.EntityType;
 import org.thingsboard.server.common.data.EntityView;
+import org.thingsboard.server.common.data.ExportableEntity;
 import org.thingsboard.server.common.data.edge.Edge;
 import org.thingsboard.server.common.data.edge.EdgeEvent;
 import org.thingsboard.server.common.data.edge.EdgeEventActionType;
@@ -46,6 +47,8 @@ import org.thingsboard.server.common.data.id.WidgetsBundleId;
 import org.thingsboard.server.common.data.kv.AttributeKvEntry;
 import org.thingsboard.server.common.data.kv.DataType;
 import org.thingsboard.server.common.data.kv.TsKvEntry;
+import org.thingsboard.server.common.data.page.PageData;
+import org.thingsboard.server.common.data.page.PageLink;
 import org.thingsboard.server.common.data.relation.EntityRelation;
 import org.thingsboard.server.common.data.relation.EntityRelationsQuery;
 import org.thingsboard.server.common.data.relation.EntitySearchDirection;
@@ -53,13 +56,19 @@ import org.thingsboard.server.common.data.relation.RelationTypeGroup;
 import org.thingsboard.server.common.data.relation.RelationsSearchParameters;
 import org.thingsboard.server.common.data.widget.WidgetType;
 import org.thingsboard.server.common.data.widget.WidgetsBundle;
+import org.thingsboard.server.dao.asset.AssetProfileService;
+import org.thingsboard.server.dao.asset.AssetService;
 import org.thingsboard.server.dao.attributes.AttributesService;
+import org.thingsboard.server.dao.cf.CalculatedFieldService;
+import org.thingsboard.server.dao.device.DeviceProfileService;
+import org.thingsboard.server.dao.device.DeviceService;
 import org.thingsboard.server.dao.edge.EdgeEventService;
 import org.thingsboard.server.dao.relation.RelationService;
 import org.thingsboard.server.dao.timeseries.TimeseriesService;
 import org.thingsboard.server.dao.widget.WidgetTypeService;
 import org.thingsboard.server.dao.widget.WidgetsBundleService;
 import org.thingsboard.server.gen.edge.v1.AttributesRequestMsg;
+import org.thingsboard.server.gen.edge.v1.CalculatedFieldRequestMsg;
 import org.thingsboard.server.gen.edge.v1.DeviceCredentialsRequestMsg;
 import org.thingsboard.server.gen.edge.v1.EntityViewsRequestMsg;
 import org.thingsboard.server.gen.edge.v1.RelationRequestMsg;
@@ -72,10 +81,14 @@ import org.thingsboard.server.service.executors.DbCallbackExecutorService;
 import org.thingsboard.server.service.state.DefaultDeviceStateService;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 @TbCoreComponent
@@ -90,7 +103,7 @@ public class DefaultEdgeRequestsService implements EdgeRequestsService {
 
     @Autowired
     private TimeseriesService timeseriesService;
-    
+
     @Autowired
     private RelationService relationService;
 
@@ -103,6 +116,17 @@ public class DefaultEdgeRequestsService implements EdgeRequestsService {
 
     @Autowired
     private WidgetTypeService widgetTypeService;
+
+    @Autowired
+    private CalculatedFieldService calculatedFieldService;
+    @Autowired
+    private DeviceService deviceService;
+    @Autowired
+    private AssetService assetService;
+    @Autowired
+    private DeviceProfileService deviceProfileService;
+    @Autowired
+    private AssetProfileService assetProfileService;
 
     @Autowired
     private DbCallbackExecutorService dbCallbackExecutorService;
@@ -291,6 +315,118 @@ public class DefaultEdgeRequestsService implements EdgeRequestsService {
             }
         }, dbCallbackExecutorService);
         return futureToSet;
+    }
+
+    @Override
+    public ListenableFuture<Void> processCalculatedFieldRequestMsg(TenantId tenantId, Edge edge, CalculatedFieldRequestMsg msg) {
+        EntityId entityId = EntityIdFactory.getByTypeAndUuid(
+                EntityType.valueOf(msg.getEntityType()),
+                new UUID(msg.getEntityIdMSB(), msg.getEntityIdLSB()));
+        //sync
+        if (entityId.getEntityType() == EntityType.EDGE) {
+            EdgeId edgeId = edge.getId();
+            ListenableFuture<List<EntityId>> deviceIdsFuture =
+                    findAllEntityIdsAsync(pageLink -> deviceService.findDevicesByTenantIdAndEdgeId(tenantId, edgeId, pageLink));
+            ListenableFuture<List<EntityId>> assetIdsFuture =
+                    findAllEntityIdsAsync(pageLink -> assetService.findAssetsByTenantIdAndEdgeId(tenantId, edgeId, pageLink));
+            ListenableFuture<List<EntityId>> deviceProfileIdsFuture =
+                    findAllEntityIdsAsync(pageLink -> deviceProfileService.findDeviceProfiles(tenantId, pageLink));
+            ListenableFuture<List<EntityId>> assetProfileIdsFuture =
+                    findAllEntityIdsAsync(pageLink -> assetProfileService.findAssetProfiles(tenantId, pageLink));
+
+            ListenableFuture<List<EntityId>> allEntityIdFuture = Futures.transform(
+                    Futures.allAsList(deviceIdsFuture, assetIdsFuture, deviceProfileIdsFuture, assetProfileIdsFuture),
+                    listsOfIds -> listsOfIds.stream()
+                            .filter(Objects::nonNull)
+                            .flatMap(Collection::stream)
+                            .collect(Collectors.toList()),
+                    dbCallbackExecutorService
+            );
+
+            SettableFuture<Void> resultFuture = SettableFuture.create();
+
+            Futures.addCallback(allEntityIdFuture, new FutureCallback<>() {
+                @Override
+                public void onSuccess(@Nullable List<EntityId> allIds) {
+                    try {
+                        List<ListenableFuture<Void>> allSaveFutures = Objects.requireNonNull(allIds).stream()
+                                .map(id -> saveCalculatedFieldsToEdge(tenantId, edge.getId(), id))
+                                .collect(Collectors.toList());
+
+                        Futures.addCallback(Futures.allAsList(allSaveFutures), new FutureCallback<>() {
+                            @Override
+                            public void onSuccess(@Nullable List<Void> result) {
+                                resultFuture.set(null);
+                            }
+
+                            @Override
+                            public void onFailure(Throwable t) {
+                                resultFuture.setException(t);
+                            }
+                        }, dbCallbackExecutorService);
+                    } catch (Exception e) {
+                        resultFuture.setException(e);
+                    }
+                }
+
+                @Override
+                public void onFailure(Throwable t) {
+                    resultFuture.setException(t);
+                }
+            }, dbCallbackExecutorService);
+
+            return resultFuture;
+        }
+        //entity id
+        return saveCalculatedFieldsToEdge(tenantId, edge.getId(), entityId);
+    }
+
+    private ListenableFuture<Void> saveCalculatedFieldsToEdge(TenantId tenantId, EdgeId edgeId, EntityId entityId) {
+        return Futures.transformAsync(
+                dbCallbackExecutorService.submit(() -> calculatedFieldService.findCalculatedFieldsByEntityId(tenantId, entityId)),
+                calculatedFields -> {
+                    List<ListenableFuture<?>> futures = calculatedFields.stream().map(field -> {
+                        try {
+                            return saveEdgeEvent(tenantId, edgeId, EdgeEventType.CALCULATED_FIELD,
+                                    EdgeEventActionType.ADDED, field.getId(), JacksonUtil.valueToTree(field));
+                        } catch (Exception e) {
+                            return Futures.immediateFailedFuture(e);
+                        }
+                    }).collect(Collectors.toList());
+
+                    return Futures.transform(
+                            Futures.allAsList(futures),
+                            voids -> null,
+                            dbCallbackExecutorService
+                    );
+                },
+                dbCallbackExecutorService
+        );
+    }
+
+    private <T extends ExportableEntity<? extends EntityId>> ListenableFuture<List<EntityId>> findAllEntityIdsAsync(Function<PageLink, PageData<T>> fetcher) {
+        return dbCallbackExecutorService.submit(() -> {
+            List<EntityId> result = new ArrayList<>();
+            PageLink pageLink = new PageLink(100);
+            PageData<T> pageData;
+            do {
+                pageData = fetcher.apply(pageLink);
+                if (pageData != null && pageData.getData() != null) {
+                    for (T entity : pageData.getData()) {
+                        if (entity != null) {
+                            result.add(entity.getId());
+                        }
+                    }
+                }
+
+                if (pageData == null || !pageData.hasNext()) {
+                    break;
+                }
+
+                pageLink = pageLink.nextPageLink();
+            } while (pageData.hasNext());
+            return result;
+        });
     }
 
     private ListenableFuture<List<EntityRelation>> findRelationByQuery(TenantId tenantId, Edge edge, EntityId entityId, EntitySearchDirection direction) {

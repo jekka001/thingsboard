@@ -244,7 +244,9 @@ public class DeviceEdgeProcessor extends BaseDeviceProcessor implements DevicePr
                         builder.addDeviceCredentialsUpdateMsg(deviceCredentialsUpdateMsg).build();
                     }
 
-                    getCalculatedFieldUpdateMsgs(edgeEvent.getTenantId(), deviceId).forEach(builder::addCalculatedFieldUpdateMsg);
+//                    if (edgeEvent.getAction().equals(EdgeEventActionType.ASSIGNED_TO_EDGE)) {
+//                        getCalculatedFieldUpdateMsgs(edgeEvent.getTenantId(), deviceId).forEach(builder::addCalculatedFieldUpdateMsg);
+//                    }
 
                     if (UpdateMsgType.ENTITY_CREATED_RPC_MESSAGE.equals(msgType)) {
                         DeviceProfile deviceProfile = edgeCtx.getDeviceProfileService().findDeviceProfileById(edgeEvent.getTenantId(), device.getDeviceProfileId());

@@ -120,7 +120,7 @@ public class AssetEdgeProcessor extends BaseAssetProcessor implements AssetProce
                             .setDownlinkMsgId(EdgeUtils.nextPositiveInt())
                             .addAssetUpdateMsg(assetUpdateMsg);
 
-                    getCalculatedFieldUpdateMsgs(edgeEvent.getTenantId(), assetId).forEach(builder::addCalculatedFieldUpdateMsg);
+//                    getCalculatedFieldUpdateMsgs(edgeEvent.getTenantId(), assetId).forEach(builder::addCalculatedFieldUpdateMsg);
 
                     if (UpdateMsgType.ENTITY_CREATED_RPC_MESSAGE.equals(msgType)) {
                         AssetProfile assetProfile = edgeCtx.getAssetProfileService().findAssetProfileById(edgeEvent.getTenantId(), asset.getAssetProfileId());
